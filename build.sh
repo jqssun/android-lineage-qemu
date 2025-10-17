@@ -20,10 +20,24 @@ cd android/lineage
 export PATH="$(realpath .)/prebuilts/sdk/tools/linux/bin/:$PATH"
 repo init -u https://github.com/LineageOS/android.git -b lineage-23.0 --git-lfs --no-clone-bundle
 repo sync -j 8 # $(nproc)
+
+# Clone MindTheGapps repository
+git clone https://github.com/MindTheGapps/vendor_gapps.git vendor/gapps
+
+# Create a makefile to include GApps
+mkdir -p vendor/extra
+cat <<'EOF' > vendor/extra/product.mk
+ifeq ($(WITH_GMS),true)
+$(call inherit-product, vendor/gapps/products/gms.mk)
+endif
+EOF
+
 sed -i 's/-$(LINEAGE_BUILDTYPE)/-jqssun/g' vendor/lineage/config/version.mk
 
 source build/envsetup.sh
 export AB_OTA_UPDATER=false
+# Set the flag to include GApps in the build
+export WITH_GMS=true
 
 breakfast virtio_arm64only userdebug
 m recoveryimage
