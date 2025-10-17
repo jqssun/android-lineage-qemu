@@ -9,6 +9,8 @@
 
 For the latest CI release, see [releases](https://github.com/jqssun/android-lineage-qemu/releases/latest).
 
+<img alt="lineage" src="https://github.com/user-attachments/assets/442b5d82-1b32-4702-b3c1-70c6b033ee58" />
+
 ## Usage
 
 - For first time installs, download `UTM-VM-lineage-*.zip` from releases and unzip.
