@@ -16,12 +16,12 @@ chmod a+x bin/repo
 export PATH="$(realpath .)/bin:$PATH"
 cd android/lineage
 export PATH="$(realpath .)/prebuilts/sdk/tools/linux/bin/:$PATH"
-repo init -u https://github.com/LineageOS/android.git -b lineage-23.1 --git-lfs --no-clone-bundle
+repo init -u https://github.com/LineageOS/android.git -b lineage-23.2 --git-lfs --no-clone-bundle
 repo sync -j 8 # $(nproc)
 sed -i 's/-$(LINEAGE_BUILDTYPE)/-jqssun/g' vendor/lineage/config/version.mk
 
 source build/envsetup.sh
-export AB_OTA_UPDATER=false
+export AB_OTA_UPDATER=false ROOMSERVICE_BRANCHES="lineage-23.1 lineage-23.0"
 breakfast virtio_arm64only
 echo "$(jq '. += [{"repository": "android_kernel_mainline_configs", "target_path": "kernel/mainline/configs"}]' device/mainline/common/lineage.dependencies)" > device/mainline/common/lineage.dependencies
 breakfast virtio_arm64only userdebug
