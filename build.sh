@@ -15,3 +15,5 @@ repo sync -j 4 --fail-fast --force-sync --no-clone-bundle
 source build/envsetup.sh
 breakfast virtio_arm64only user 
 m vm-utm-zip
+breakfast virtio_arm64only_go user 
+m vm-utm-zip
