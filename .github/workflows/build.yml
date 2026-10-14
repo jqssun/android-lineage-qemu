@@ -1,84 +1,38 @@
-name: Build
+name: LineageOS Build Workflow
 
 on:
   workflow_dispatch:
-    inputs:
-      runner:
-        description: "Runner"
-        required: true
-        type: string
-        default: "self-hosted" # ubuntu-latest
-  schedule:
-    - cron: "0 0 */16 * *"
-
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    outputs:
-      build: ${{ steps.check.outputs.build }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-tags: true
-      - id: check
-        run: |
-          source common.sh
-          if [ "${{ github.event_name }}" = workflow_dispatch ] || ! check_version; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          fi
-
   build:
-    needs: check
-    if: needs.check.outputs.build == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'self-hosted' }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Set ENV
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install QEMU Dependencies
         run: |
-          chmod +x *.sh
-          echo "VERSION=$(date '+%Y.%m.%d')" >> $GITHUB_ENV
-
-      - name: Build
-        env:
-          DEBIAN_FRONTEND: noninteractive
+          sudo apt update
+          sudo apt install -y build-essential ninja-build python3-pip libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev libssl-dev libgtk-3-dev libvirglrenderer-dev libslirp-dev libaio-dev liburing-dev
+      - name: Build Optimized QEMU
         run: |
-          ./build.sh
-
-      - name: Publish
+          git clone https://gitlab.com/qemu-project/qemu.git --depth 1
+          cd qemu
+          rm -rf build/
+          ./configure --target-list=aarch64-softmmu --disable-werror --enable-slirp --enable-linux-io-uring --enable-linux-aio --enable-opengl --enable-kvm --enable-virglrenderer --extra-cflags="-O3 -march=native"
+          make -j$(nproc)
+          cd ../..
+          zip -r qemu.zip qemu/
+      - name: Create GitHub Release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: v${{ env.VERSION }}
-          tag_name: v${{ env.VERSION }}
-          files: |
-            boot_arm64only.img
-            recovery_arm64only.img
-            recovery_arm64only-userdebug.img
-            android/lineage/out/target/product/virtio_arm64only/*ota.zip
-            android/lineage/out/target/product/virtio_arm64only/VirtualMachine/UTM/UTM-VM*.zip
-            boot_x86_64.img
-            recovery_x86_64.img
-            recovery_x86_64-userdebug.img
-            android/lineage/out/target/product/virtio_x86_64/*ota.zip
-            android/lineage/out/target/product/virtio_x86_64/VirtualMachine/UTM/UTM-VM*.zip
-
-      - name: Attest
-        uses: actions/attest@v4
-        with:
-          subject-path: |
-            boot_arm64only.img
-            recovery_arm64only.img
-            recovery_arm64only-userdebug.img
-            android/lineage/out/target/product/virtio_arm64only/*ota.zip
-            android/lineage/out/target/product/virtio_arm64only/VirtualMachine/UTM/UTM-VM*.zip
-            boot_x86_64.img
-            recovery_x86_64.img
-            recovery_x86_64-userdebug.img
-            android/lineage/out/target/product/virtio_x86_64/*ota.zip
-            android/lineage/out/target/product/virtio_x86_64/VirtualMachine/UTM/UTM-VM*.zip
+          tag_name: cuttlefish-${{env.YEAR}}
+          name: cuttlefish-${{ env.VERSION }}
+          body: |
+           Automatic comilation of cuttlefish packages
+          files: cuttlefish.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}     

@@ -1,44 +1,19 @@
 #!/bin/bash
-
 export DEBIAN_FRONTEND=noninteractive
-sudo apt update
-sudo apt install -y sudo git android-sdk-platform-tools python-is-python3 python3-yaml qemu-utils # libncurses5
-sudo apt install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick protobuf-compiler python3-protobuf lib32readline-dev lib32z1-dev libdw-dev libelf-dev lz4 libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
-sudo apt install -y meson-1.5 glslang-tools python3-mako
-git config --global user.name "github-actions[bot]"
-git config --global user.email "github-actions[bot]@users.noreply.github.com"
-git config --global trailer.changeid.key "Change-Id"
-git config --global color.ui true
-git lfs install
-
-unset REPO_URL
-mkdir -p bin android/lineage
-curl https://storage.googleapis.com/git-repo-downloads/repo > bin/repo
-chmod a+x bin/repo
-export PATH="$(realpath .)/bin:$PATH"
-cd android/lineage
-export PATH="$(realpath .)/prebuilts/sdk/tools/linux/bin/:$PATH"
-repo init -u https://github.com/LineageOS/android.git -b lineage-23.2 --git-lfs --no-clone-bundle --depth 1
-repo sync -c --prune --force-sync --retry-fetches=8 -j $(nproc)
-sed -i 's/-$(LINEAGE_BUILDTYPE)/-jqssun/g' vendor/lineage/config/version.mk
-
+export _JAVA_OPTIONS="-Xmx25g"
+export LZ4_COMPRESSION_LEVEL=9
+export ANDROID_QUIET_BUILD=true
+export USE_CCACHE=1
+export CCACHE_EXEC=/usr/bin/ccache
+export PYTHONDONTWRITEBYTECODE=true
+export BUILD_ENFORCE_SELINUX=1
+export DEBIAN_FRONTEND=noninteractive
+ccache -M 50G
+cd lineage
+repo init -u https://github.com/LineageOS/android.git -b lineage-24.0 --git-lfs --no-clone-bundle --depth=1
+repo sync -j 4 --fail-fast --force-sync --no-clone-bundle
 source build/envsetup.sh
-export AB_OTA_UPDATER=false ROOMSERVICE_BRANCHES="lineage-23.1 lineage-23.0"
-
-breakfast virtio_x86_64 userdebug
-m recoveryimage
-mv out/target/product/virtio_x86_64/recovery.img ../../recovery_x86_64-userdebug.img
-
-breakfast virtio_x86_64 user
-m vm-utm-zip otapackage
-mv out/target/product/virtio_x86_64/boot.img ../../boot_x86_64.img
-mv out/target/product/virtio_x86_64/recovery.img ../../recovery_x86_64.img
-
-breakfast virtio_arm64only userdebug
-m recoveryimage
-mv out/target/product/virtio_arm64only/recovery.img ../../recovery_arm64only-userdebug.img
-
-breakfast virtio_arm64only user
-m vm-utm-zip otapackage
-mv out/target/product/virtio_arm64only/boot.img ../../boot_arm64only.img
-mv out/target/product/virtio_arm64only/recovery.img ../../recovery_arm64only.img
+breakfast virtio_arm64only user 
+m vm-utm-zip
+breakfast virtio_arm64only_go user 
+m vm-utm-zip

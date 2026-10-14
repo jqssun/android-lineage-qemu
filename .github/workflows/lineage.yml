@@ -1,0 +1,74 @@
+name: LineageOS Build Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Cleanup Runner (Based on Ubuntu2404-Readme)
+        run: |
+          sudo snap remove --purge firefox
+          sudo snap remove --purge gnome-42-2204
+          sudo snap remove --purge core22
+          sudo snap remove --purge bare
+          sudo systemctl stop snapd.service
+          sudo apt-get purge -y snapd
+          sudo rm -rf /var/cache/snapd/
+          sudo rm -rf /var/snap
+          sudo rm -rf /var/lib/snapd
+          sudo rm -rf /usr/local/lib/android    # Android SDK (~5GB)
+          sudo rm -rf /usr/share/dotnet         # .NET (~2GB)
+          sudo rm -rf /opt/ghc                  # Haskell (~2GB)
+          sudo rm -rf /usr/local/share/boost    # Boost C++ (~1GB)
+          sudo rm -rf /opt/hostedtoolcache/CodeQL # CodeQL (~1GB)
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune -a -f
+       
+      - name: Configuration du Cache de Compilation (CCACHE)
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+      - name: Install lineage dependancies
+        run: |
+         export DEBIAN_FRONTEND=noninteractive
+         sudo  apt-get update && apt-get install -y \
+         bc bison build-essential ccache curl flex g++-multilib gcc-multilib git git-lfs \
+         gnupg gperf imagemagick protobuf-compiler python3-protobuf lib32readline-dev \
+         lib32z1-dev libdw-dev libelf-dev libgnutls28-dev lz4 libsdl1.2-dev libssl-dev \
+         libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc \
+         xxd zip zlib1g-dev meson glslang-tools python3-mako python-is-python3 wget \
+         && rm -rf /var/lib/apt/lists/*
+         wget https://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb && sudo dpkg -i libtinfo5_6.3-2_amd64.deb
+         wget https://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2_amd64.deb && sudo dpkg -i libncurses5_6.3-2_amd64.deb
+         rm -f *.deb
+         curl https://storage.googleapis.com/git-repo-downloads/repo > /usr/local/bin/repo && chmod a+x /usr/local/bin/repo
+         export USE_CCACHE=1
+         git config --global user.name "github-actions[bot]"
+         git config --global user.email "github-actions[bot]@users.noreply.github.com"
+         git config --global color.ui true
+         git lfs install
+         export CCACHE_DIR=$(pwd)/.ccache
+      - name: Build 
+        run: |
+            bash build.sh
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuttlefish-${{env.YEAR}}
+          name: cuttlefish-${{ env.VERSION }}
+          body: |
+           Android Image for aarch64 machines
+          files: UTM-VM*.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

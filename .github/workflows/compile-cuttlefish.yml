@@ -1,0 +1,75 @@
+name: Monthly Cuttlefish Release
+
+on:
+  schedule:
+    - cron: '1 0 2 * *'
+  workflow_dispatch:
+jobs:
+  build_and_release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Cleanup Runner (Based on Ubuntu2404-Readme)
+        run: |
+          sudo snap remove --purge firefox
+          sudo snap remove --purge gnome-42-2204
+          sudo snap remove --purge core22
+          sudo snap remove --purge bare
+          sudo systemctl stop snapd.service
+          sudo apt-get purge -y snapd
+          sudo rm -rf /var/cache/snapd/
+          sudo rm -rf /var/snap
+          sudo rm -rf /var/lib/snapd
+          sudo rm -rf /usr/local/lib/android    # Android SDK (~5GB)
+          sudo rm -rf /usr/share/dotnet         # .NET (~2GB)
+          sudo rm -rf /opt/ghc                  # Haskell (~2GB)
+          sudo rm -rf /usr/local/share/boost    # Boost C++ (~1GB)
+          sudo rm -rf /opt/hostedtoolcache/CodeQL # CodeQL (~1GB)
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune -a -f
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Bazel cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+          key: bazel-cache-${{ runner.os }}-${{ hashFiles('**/WORKSPACE', '**/BUILD') }}
+          restore-keys: |
+            bazel-cache-${{ runner.os }}-
+
+      - name: Install Dependencies
+        run: |
+          df -h
+          sudo apt-get update
+          sudo apt-get install -y git devscripts config-package-dev debhelper-compat \
+            build-essential python3-all-dev libsystemd-dev pkg-config
+      - name: Build Cuttlefish
+        run: |
+          git clone https://github.com/google/android-cuttlefish.git source
+          cd source
+          # Limitation des ressources pour la stabilité sur GitHub
+          export BAZEL_FLAGS="--jobs=2 --local_ram_resources=7168"
+          sudo ./tools/buildutils/installbazel.sh
+          ./tools/buildutils/build_packages.sh
+          cd ..
+          find ./source -name "*.deb" -exec mv {} . \;
+          rm -f *build-deps*
+          zip cuttlefish.zip *.deb
+          echo "VERSION=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
+          echo "YEAR=$(date '+%Y')" >> $GITHUB_ENV
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuttlefish-${{env.YEAR}}
+          name: cuttlefish-${{ env.VERSION }}
+          body: |
+           Automatic comilation of cuttlefish packages
+          files: cuttlefish.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
