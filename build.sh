@@ -10,7 +10,7 @@ export BUILD_ENFORCE_SELINUX=1
 export DEBIAN_FRONTEND=noninteractive
 ccache -M 50G
 cd lineage
-repo init -u https://github.com/LineageOS/android.git -b lineage-23.2 --git-lfs --no-clone-bundle --depth=1
+repo init -u https://github.com/LineageOS/android.git -b lineage-24.0 --git-lfs --no-clone-bundle --depth=1
 repo sync -j 4 --fail-fast --force-sync --no-clone-bundle
 source build/envsetup.sh
 breakfast virtio_arm64only user 
