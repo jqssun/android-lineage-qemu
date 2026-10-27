@@ -1,6 +1,6 @@
 # LineageOS for QEMU Virtual Machines
 
-[![GitHub](https://img.shields.io/github/downloads/jqssun/android-lineage-qemu/total?label=GitHub&logo=GitHub)](https://github.com/jqssun/android-lineage-qemu/releases)
+[![GitHub](https://img.shields.io/github/downloads/jqssun/android-lineage-qemu/total?label=GitHub%20downloads&logo=GitHub)](https://github.com/jqssun/android-lineage-qemu/releases)
 [![license](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/jqssun/android-lineage-qemu/blob/main/LICENSE)
 [![build](https://img.shields.io/github/actions/workflow/status/jqssun/android-lineage-qemu/build.yml)](https://github.com/jqssun/android-lineage-qemu/actions/workflows/build.yml)
 
