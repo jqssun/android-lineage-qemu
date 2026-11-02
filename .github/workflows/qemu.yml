@@ -1,0 +1,38 @@
+name: QEMU Build Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install QEMU Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential ninja-build python3-pip libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev libssl-dev libgtk-3-dev libvirglrenderer-dev libslirp-dev libaio-dev liburing-dev
+      - name: Build Optimized QEMU
+        run: |
+          git clone https://gitlab.com/qemu-project/qemu.git --depth 1
+          cd qemu
+          rm -rf build/
+          ./configure --target-list=aarch64-softmmu --disable-werror --enable-slirp --enable-linux-io-uring --enable-linux-aio --enable-opengl --enable-kvm --enable-virglrenderer --extra-cflags="-O3 -march=native"
+          make -j$(nproc)
+          cd ../..
+          zip -r qemu.zip qemu/
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuttlefish-${{env.YEAR}}
+          name: cuttlefish-${{ env.VERSION }}
+          body: |
+           Automatic comilation of cuttlefish packages
+          files: qemu.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}     
