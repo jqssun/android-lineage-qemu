@@ -1,6 +1,10 @@
 # LineageOS for QEMU Virtual Machines
 
-LineageOS builds for running Android VM on 
+[![GitHub](https://img.shields.io/github/downloads/jqssun/android-lineage-qemu/total?label=GitHub&logo=GitHub)](https://github.com/jqssun/android-lineage-qemu/releases)
+[![license](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/jqssun/android-lineage-qemu/blob/main/LICENSE)
+[![build](https://img.shields.io/github/actions/workflow/status/jqssun/android-lineage-qemu/build.yml)](https://github.com/jqssun/android-lineage-qemu/actions/workflows/build.yml)
+
+[LineageOS](https://lineageos.org/Changelog-32/) builds for running Android VM on 
 - [any macOS/iOS device (via UTM)](https://wiki.lineageos.org/utm-vm-on-apple-silicon-mac), or 
 - [generic libvirt QEMU virtual machines](https://wiki.lineageos.org/libvirt-qemu#create-and-configure-the-virtual-machine-using-virt-manager)
 
@@ -43,6 +47,17 @@ fastboot -s tcp:$HOST_IP flash recovery recovery-userdebug.img
 
 Follow the [instructions to install an update package](#usage). Use the [Google apps package for the **Mobile**, **ARM64** variant](https://wiki.lineageos.org/gapps/#downloads).
 
+For the `x86_64` virtual machine image, you may need to additionally resize the `product` partition while in `fastbootd`
+```shell
+fastboot -s tcp:$HOST_IP resize-logical-partition product 1610612736
+```
+
+To complete the resizing for the `x86_64` image, boot back into **LineageOS Recovery** and use
+```shell
+adb -s $HOST_IP:5555 shell e2fsck -fy /dev/block/mapper/product
+adb -s $HOST_IP:5555 shell resize2fs /dev/block/mapper/product
+```
+
 ### Installing Magisk
 
 To install [Magisk](https://github.com/topjohnwu/Magisk/releases/latest), download the [`boot.img`](https://github.com/jqssun/android-lineage-qemu/releases/latest/download/boot.img) from releases and patch it on a running instance of this LineageOS build following the [instructions](https://topjohnwu.github.io/Magisk/install.html#patching-images). Pull the patched image `magisk_patched*.img` from the device, [put the device in `fastbootd`](#bypassing-signature-verification-in-recovery), then run
@@ -59,6 +74,92 @@ fastboot flash system system.img
 ```shell
 fastboot flash system_a system.img
 fastboot flash system_b system.img
+
+This repository provides the build script to compile LineageOS on the latest Ubuntu, and assumes you already have root access via `sudo` with `apt` and `git` in your `$PATH`. It may also work with other Linux distributions, but these configurations are not tested.
+
+To build these images yourself via CI (e.g. GitHub Actions), fork this repository, then go to **Actions**, select **Build**, and select **Run workflow**. Under **Runner**, you can either use a GitHub-hosted runner by entering `ubuntu-latest`, or `self-hosted` for your own hardware.
+
+## Development
+
+To run the virtual machine via `qemu-system-*`, you may use these commands in the directory containing the extracted `LineageOS_on_*.utm` from `UTM-VM-lineage-*.zip`. This assumes you are using `qemu` installed via `Homebrew`, `nix-darwin` (macOS), `Procursus` (iOS), or your distribution's repositories (Linux).
+
+Run the following to set the platform-agnostic `QEMU_OPTS` first, and then apply the platform-specific [`DARWIN_QEMU_OPTS`](#running-on-macos-or-ios) or [`LINUX_QEMU_OPTS`](#running-on-linux) accordingly before starting the virtual machine via `qemu-system-*`. Graphical output will appear on the `virtio-gpu-*` device. You can switch to this display by selecting **View** in the menu bar after boot selection.
+
+```shell
+read -r -d '' QEMU_OPTS << EOM
+    -m 2048 \
+    -smp 2 \
+    -device virtio-blk-pci,drive=vda,bootindex=0 \
+    -device virtio-blk-pci,drive=vdb,bootindex=1 \
+    -drive if=pflash,unit=1,file=$(find ./LineageOS_on_*.utm/Data/efi_vars.fd) \
+    -drive file=$(find ./LineageOS_on_*.utm/Data/vda.qcow2),if=none,id=vda,discard=unmap,detect-zeroes=unmap \
+    -drive file=$(find ./LineageOS_on_*.utm/Data/vdb.qcow2),if=none,id=vdb,discard=unmap,detect-zeroes=unmap \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0,hostfwd=tcp:0.0.0.0:5555-:5555,hostfwd=tcp:0.0.0.0:5554-:5554 \
+    -device usb-tablet,bus=usb-bus.0 \
+    -device usb-mouse,bus=usb-bus.0 \
+    -device usb-kbd,bus=usb-bus.0 \
+    -device virtio-serial \
+    -device virtio-rng-pci \
+    -chardev stdio,mux=on,id=charconsole \
+    -serial chardev:charconsole
+EOM
+```
+
+### Running on macOS or iOS
+
+Set `DARWIN_QEMU_OPTS` for macOS or iOS:
+```shell
+VMF_CODE=$(find /opt/homebrew/Cellar/qemu /nix/store/*-qemu-*/share -name "edk2-$(uname -m | sed 's/arm64/aarch64/')-code.fd" 2>/dev/null)
+read -r -d '' DARWIN_QEMU_OPTS << EOM
+    -device virtio-gpu-pci \
+    -display cocoa,show-cursor=on \
+    -device intel-hda \
+    -device hda-output,audiodev=audio0 \
+    -audiodev coreaudio,id=audio0 \
+    -drive if=pflash,unit=0,file=$VMF_CODE,file.locking=off,format=raw,readonly=on \
+    -device nec-usb-xhci,id=usb-bus \
+    -device qemu-xhci,id=usb-controller-0 \
+    $QEMU_OPTS
+EOM
+```
+- For faster Hypervisor framework (HVF) acceleration on Mac (Apple silicon), use:
+```shell
+qemu-system-aarch64 -machine virt -accel hvf $DARWIN_QEMU_OPTS
+```
+- For slower cross-architecture emulation, use:
+```shell
+qemu-system-aarch64 -machine virt -cpu max,pauth-impdef=on -accel tcg,tb-size=1024,thread=multi $DARWIN_QEMU_OPTS
+```
+- For faster Hypervisor framework (HVF) acceleration on Mac (Intel), use:
+```shell
+qemu-system-x86_64 -machine q35 -vga none -cpu host -accel hvf $DARWIN_QEMU_OPTS
+```
+
+### Running on Linux
+
+Set `LINUX_QEMU_OPTS` for Linux:
+```shell
+VMF_CODE=$(find /usr/share/ -name $([ "$(uname -m)" = "x86_64" ] && echo OVMF_CODE_4M || echo AAVMF_CODE).fd 2>/dev/null)
+read -r -d '' LINUX_QEMU_OPTS << EOM
+    -device virtio-gpu-pci -display sdl,gl=off \
+    -drive if=pflash,unit=0,file=$VMF_CODE,file.locking=off,format=raw,readonly=on \
+    -device usb-ehci,id=usb-bus \
+    $QEMU_OPTS
+EOM
+```
+If your device supports OpenGL acceleration, use `-device virtio-gpu-gl-pci -display sdl,gl=on` instead of `-device virtio-gpu-pci -display sdl,gl=off`.
+- For faster KVM acceleration via Virtualization Host Extensions (VHEs) on ARM64 Linux, use:
+```shell
+qemu-system-aarch64 -machine virt,gic-version=3,highmem=off -cpu host -accel kvm $LINUX_QEMU_OPTS
+```
+- For slower cross-architecture emulation, use:
+```shell
+qemu-system-aarch64 -machine virt -cpu max,pauth-impdef=on -accel tcg,tb-size=1024,thread=multi $LINUX_QEMU_OPTS
+```
+- For faster KVM acceleration on x86_64 Linux, use:
+```shell
+qemu-system-x86_64 -machine q35 -vga none -cpu host -accel kvm $LINUX_QEMU_OPTS
 ```
 ## Building
 
