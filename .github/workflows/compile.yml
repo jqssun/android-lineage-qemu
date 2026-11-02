@@ -1,0 +1,43 @@
+name: Compilation utilitaires cuttlefish
+on:
+  schedule:
+    - cron: '1 0 1 * *'
+  workflow_dispatch: 
+jobs:
+  build_and_release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Dépendances
+        run: |
+          df -h
+          sudo apt-get update
+          sudo apt install libparted-dev libclang-dev openssl cargo wget 
+      - name: Compilation
+        run: |
+          git clone https://gitlab.com/slp/start-avm.git start
+          git clone https://gitlab.com/slp/cvd2img.git cvd
+          cd start
+          make
+          cd ../cvd
+          cargo build 
+      - name: Finishing
+        run: |
+          echo "VERSION=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
+          rm -rf cvd/src/ cvd/.git/ start/.git
+          zip -r start_vm.zip start/ cvd/ 
+      - name: Création version
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuttlefish-2026
+          name: Utils cuttlefish-${{ env.VERSION }}
+          body: |
+            Utils for cuttlefish
+          files:  start_vm.zip 
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
