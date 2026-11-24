@@ -167,7 +167,7 @@ VMF_CODE=$(find /usr/share/ -name $([ "$(uname -m)" = "x86_64" ] && echo OVMF_CO
 read -r -d '' LINUX_QEMU_OPTS << EOM
     -device virtio-gpu-pci -display sdl,gl=off \
     -drive if=pflash,unit=0,file=$VMF_CODE,file.locking=off,format=raw,readonly=on \
-    -device usb-ehci,id=usb-bus \
+    -device qemu-xhci,id=usb-bus \
     $QEMU_OPTS
 EOM
 ```

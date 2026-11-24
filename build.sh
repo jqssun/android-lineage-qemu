@@ -25,6 +25,15 @@ sed -i 's/-$(LINEAGE_BUILDTYPE)/-jqssun/g' vendor/lineage/config/version.mk
 source build/envsetup.sh
 export AB_OTA_UPDATER=false ROOMSERVICE_BRANCHES="lineage-24.0 lineage-23.2"
 
+breakfast virtio_arm64only user
+sed -i 's#</resources>#<integer name="config_defaultRefreshRate">0</integer><integer name="config_defaultPeakRefreshRate">1000</integer>\n</resources>#' device/virt/virt-common/overlays/overlay/frameworks/base/core/res/res/values/config.xml
+sed -i 's/^BOARD_KERNEL_IMAGE_NAME := Image$/BOARD_KERNEL_CMDLINE += arm64.nobti\n&/' device/virt/virtio_arm64/BoardConfig.mk
+sed -i 's/^# Camera$/&\nTARGET_SUPPORTS_EXTERNAL_CAMERAS := true/' device/virt/virt-common/virt-common.mk
+sed -i 's/context=u:object_r:firmware_file:s0/context=u:object_r:firmware_mnt_file:s0/' device/virt/virt-common/configs/init/init.virt.rc
+sed -i 's#^firmware_directories /vendor/firmware_mnt$#&/#' device/virt/virt-common/configs/init/ueventd.virt.rc
+sed -i '$a allow kernel firmware_mnt_file:system firmware_load;' device/virt/virt-common/sepolicy/vendor/kernel.te
+for p in ../../patches/*.patch; do patch -p1 < "$p"; done
+
 breakfast virtio_x86_64 userdebug
 m recoveryimage
 mv out/target/product/virtio_x86_64/recovery.img ../../recovery_x86_64-userdebug.img

@@ -1,0 +1,441 @@
+--- a/external/drm_hwcomposer-upstream/drm/DrmDevice.h
++++ b/external/drm_hwcomposer-upstream/drm/DrmDevice.h
+@@ -99,6 +99,10 @@
+     return HasAddFb2ModifiersSupport_;
+   }
+ 
++  auto NeedsHostOrderScanout() const {
++    return needs_host_order_scanout_;
++  }
++
+   auto CreateBufferForModeset(uint32_t width, uint32_t height)
+       -> std::optional<BufferInfo>;
+ 
+@@ -142,6 +146,7 @@
+   std::optional<std::pair<uint64_t, uint64_t>> cap_cursor_size_;
+ 
+   bool HasAddFb2ModifiersSupport_{};
++  bool needs_host_order_scanout_{};
+ 
+   std::unique_ptr<DrmFbImporter> drm_fb_importer_;
+   std::unique_ptr<Backend> backend_;
+--- a/external/drm_hwcomposer-upstream/drm/DrmDevice.cpp
++++ b/external/drm_hwcomposer-upstream/drm/DrmDevice.cpp
+@@ -24,6 +24,7 @@
+ #include <fcntl.h>
+ #include <sys/mman.h>
+ #include <sys/types.h>
++#include <virtgpu_drm.h>
+ #include <xf86drm.h>
+ #include <xf86drmMode.h>
+ 
+@@ -57,6 +58,22 @@
+ 
+ namespace android::drm_hwcomposer {
+ 
++namespace {
++
++auto GetVirtgpuParam(int fd, uint64_t param) -> int {
++  int value = 0;
++  struct drm_virtgpu_getparam getparam = {
++      .param = param,
++      .value = reinterpret_cast<uintptr_t>(&value),
++  };
++  if (drmIoctl(fd, DRM_IOCTL_VIRTGPU_GETPARAM, &getparam) != 0) {
++    return 0;
++  }
++  return value;
++}
++
++}
++
+ DrmDevice::~DrmDevice() {
+   if (GetFd() && drmIsMaster(*GetFd()) != 0) {
+     drmDropMaster(*GetFd());
+@@ -108,6 +125,13 @@
+     return ret;
+   }
+ 
++  if (GetName() == "virtio_gpu" &&
++      GetVirtgpuParam(*GetFd(), VIRTGPU_PARAM_3D_FEATURES) == 0 &&
++      GetVirtgpuParam(*GetFd(), VIRTGPU_PARAM_RESOURCE_BLOB) == 0) {
++    needs_host_order_scanout_ = true;
++    ALOGI("virtio_gpu without 3D and blob: scanout limited to XRGB8888");
++  }
++
+ #ifdef DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
+   ret = drmSetClientCap(*GetFd(), DRM_CLIENT_CAP_WRITEBACK_CONNECTORS, 1);
+   if (ret != 0) {
+--- a/external/drm_hwcomposer-upstream/drm/DrmFbImporter.h
++++ b/external/drm_hwcomposer-upstream/drm/DrmFbImporter.h
+@@ -46,12 +46,17 @@
+   auto operator=(IDrmFbIdHandle &&) = delete;
+ 
+   virtual auto GetFbId [[nodiscard]] () const -> uint32_t = 0;
++  virtual void PrepareForScanout(const SharedFd &) const {
++  }
+ };
+ 
+ class DrmFbIdHandle : public IDrmFbIdHandle {
+  public:
+   static auto CreateInstance(BufferInfo *bo, GemHandle first_gem_handle,
+                              DrmDevice &drm) -> std::shared_ptr<DrmFbIdHandle>;
++  static auto CreateHostOrderInstance(BufferInfo *bo, GemHandle src_gem_handle,
++                                      uint32_t scanout_format, DrmDevice &drm)
++      -> std::shared_ptr<DrmFbIdHandle>;
+ 
+   ~DrmFbIdHandle() override;
+   DrmFbIdHandle(DrmFbIdHandle &&) = delete;
+@@ -63,6 +68,12 @@
+     return fb_id_;
+   }
+ 
++  auto GetScanoutFormat [[nodiscard]] () const -> uint32_t {
++    return scanout_format_;
++  }
++
++  void PrepareForScanout(const SharedFd &acquire_fence) const override;
++
+  private:
+   explicit DrmFbIdHandle(DrmDevice &drm);
+ 
+@@ -70,6 +81,18 @@
+ 
+   uint32_t fb_id_{};
+   std::array<GemHandle, kBufferMaxPlanes> gem_handles_{};
++
++  GemHandle src_gem_handle_{};
++  uint32_t scanout_format_{};
++  uint32_t width_{};
++  uint32_t height_{};
++  uint32_t src_pitch_{};
++  uint32_t src_offset_{};
++  uint32_t dst_pitch_{};
++  void *src_map_{};
++  size_t src_map_size_{};
++  void *dst_map_{};
++  size_t dst_map_size_{};
+ };
+ 
+ // Interface for importing a drm framebuffer from a BufferInfo object.
+@@ -77,6 +100,10 @@
+  public:
+   virtual auto GetOrCreateFbId(BufferInfo *bo)
+       -> std::shared_ptr<DrmFbIdHandle> = 0;
++  virtual auto GetOrCreateClientTargetFbId(BufferInfo *bo)
++      -> std::shared_ptr<DrmFbIdHandle> {
++    return GetOrCreateFbId(bo);
++  }
+   virtual ~DrmFbImporter() = default;
+ };
+ 
+@@ -93,8 +120,13 @@
+ 
+   auto GetOrCreateFbId(BufferInfo *bo)
+       -> std::shared_ptr<DrmFbIdHandle> override;
++  auto GetOrCreateClientTargetFbId(BufferInfo *bo)
++      -> std::shared_ptr<DrmFbIdHandle> override;
+ 
+  private:
++  auto GetOrCreate(BufferInfo *bo, bool client_target)
++      -> std::shared_ptr<DrmFbIdHandle>;
++
+   void CleanupEmptyCacheElements() {
+     for (auto it = drm_fb_id_handle_cache_.begin();
+          it != drm_fb_id_handle_cache_.end();) {
+--- a/external/drm_hwcomposer-upstream/drm/DrmFbImporter.cpp
++++ b/external/drm_hwcomposer-upstream/drm/DrmFbImporter.cpp
+@@ -22,10 +22,13 @@
+ #include <drm/drm.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_mode.h>
++#include <sync/sync.h>
++#include <sys/mman.h>
+ #include <utils/Trace.h>
+ #include <xf86drm.h>
+ #include <xf86drmMode.h>
+ 
++#include <array>
+ #include <cerrno>
+ #include <cinttypes>
+ #include <cstddef>
+@@ -96,12 +99,125 @@
+   return local;
+ }
+ 
++auto DrmFbIdHandle::CreateHostOrderInstance(BufferInfo *bo,
++                                            GemHandle src_gem_handle,
++                                            uint32_t scanout_format,
++                                            DrmDevice &drm)
++    -> std::shared_ptr<DrmFbIdHandle> {
++  ATRACE_NAME("Create host order scanout buffer");
++
++  std::shared_ptr<DrmFbIdHandle> local(new DrmFbIdHandle(drm));
++  local->src_gem_handle_ = src_gem_handle;
++  const int fd = *drm.GetFd();
++
++  if (bo->modifiers[0] != DRM_FORMAT_MOD_NONE &&
++      bo->modifiers[0] != DRM_FORMAT_MOD_INVALID) {
++    ALOGE("Host order scanout requires a linear buffer");
++    return {};
++  }
++
++  struct drm_mode_map_dumb src_map = {.handle = src_gem_handle};
++  if (drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &src_map) != 0) {
++    ALOGE("Failed to map scanout source buffer %d", errno);
++    return {};
++  }
++  local->src_map_size_ = static_cast<size_t>(bo->offsets[0]) +
++                         (static_cast<size_t>(bo->pitches[0]) * bo->height);
++  void *src = mmap(nullptr, local->src_map_size_, PROT_READ, MAP_SHARED, fd,
++                   static_cast<off_t>(src_map.offset));
++  if (src == MAP_FAILED) {
++    ALOGE("Failed to mmap scanout source buffer %d", errno);
++    return {};
++  }
++  local->src_map_ = src;
++
++  struct drm_mode_create_dumb create = {
++      .height = bo->height,
++      .width = bo->width,
++      .bpp = 32,
++      .flags = 0,
++  };
++  if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
++    ALOGE("Failed to create host order scanout buffer %d", errno);
++    return {};
++  }
++  local->gem_handles_[0] = create.handle;
++  local->dst_pitch_ = create.pitch;
++  local->dst_map_size_ = create.size;
++
++  struct drm_mode_map_dumb dst_map = {.handle = create.handle};
++  if (drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &dst_map) != 0) {
++    ALOGE("Failed to map host order scanout buffer %d", errno);
++    return {};
++  }
++  void *dst = mmap(nullptr, local->dst_map_size_, PROT_READ | PROT_WRITE,
++                   MAP_SHARED, fd, static_cast<off_t>(dst_map.offset));
++  if (dst == MAP_FAILED) {
++    ALOGE("Failed to mmap host order scanout buffer %d", errno);
++    return {};
++  }
++  local->dst_map_ = dst;
++
++  local->width_ = bo->width;
++  local->height_ = bo->height;
++  local->src_pitch_ = bo->pitches[0];
++  local->src_offset_ = bo->offsets[0];
++
++  const std::array<uint32_t, kBufferMaxPlanes> pitches = {create.pitch};
++  const std::array<uint32_t, kBufferMaxPlanes> offsets = {};
++  if (drmModeAddFB2(fd, bo->width, bo->height, scanout_format,
++                    local->gem_handles_.data(), pitches.data(), offsets.data(),
++                    &local->fb_id_, 0) != 0) {
++    ALOGE("Failed to create host order scanout fb %d", errno);
++    return {};
++  }
++
++  local->scanout_format_ = scanout_format;
++  bo->format = scanout_format;
++  return local;
++}
++
++void DrmFbIdHandle::PrepareForScanout(const SharedFd &acquire_fence) const {
++  if (src_map_ == nullptr || dst_map_ == nullptr) {
++    return;
++  }
++
++  ATRACE_NAME("Convert scanout buffer to host order");
++
++  constexpr int kFenceTimeoutMs = 1000;
++  if (acquire_fence && *acquire_fence >= 0 &&
++      sync_wait(*acquire_fence, kFenceTimeoutMs) != 0) {
++    ALOGW("Timed out waiting for scanout source buffer");
++  }
++
++  const auto *src = static_cast<const uint8_t *>(src_map_) + src_offset_;
++  auto *dst = static_cast<uint8_t *>(dst_map_);
++  for (uint32_t y = 0; y < height_; y++) {
++    const auto *src_row = reinterpret_cast<const uint32_t *>(
++        src + (static_cast<size_t>(y) * src_pitch_));
++    auto *dst_row = reinterpret_cast<uint32_t *>(
++        dst + (static_cast<size_t>(y) * dst_pitch_));
++    for (uint32_t x = 0; x < width_; x++) {
++      const uint32_t pixel = src_row[x];
++      dst_row[x] = (pixel & 0xFF00FF00U) | ((pixel >> 16U) & 0xFFU) |
++                   ((pixel & 0xFFU) << 16U);
++    }
++  }
++}
++
+ DrmFbIdHandle::~DrmFbIdHandle() {
+   // NOLINTNEXTLINE(misc-const-correctness)
+   ATRACE_NAME("Close FB and dmabufs");
+ 
++  if (src_map_ != nullptr) {
++    munmap(src_map_, src_map_size_);
++  }
++  if (dst_map_ != nullptr) {
++    munmap(dst_map_, dst_map_size_);
++  }
++
+   /* Destroy framebuffer object */
+-  if (drmModeRmFB(*drm_fd_, fb_id_) != 0) {
++  if (fb_id_ != 0 && drmModeRmFB(*drm_fd_, fb_id_) != 0) {
+     ALOGE("Failed to rm fb");
+   }
+ 
+@@ -127,6 +243,12 @@
+       ALOGE("Failed to close gem handle %d, errno: %d", gem_handles_[i], errno);
+     }
+   }
++  if (src_gem_handle_ != 0) {
++    gem_close.handle = src_gem_handle_;
++    if (drmIoctl(*drm_fd_, DRM_IOCTL_GEM_CLOSE, &gem_close) != 0) {
++      ALOGE("Failed to close gem handle %d, errno: %d", src_gem_handle_, errno);
++    }
++  }
+ }
+ 
+ DrmFbIdHandle::DrmFbIdHandle(DrmDevice &drm) : drm_fd_(drm.GetFd()) {
+@@ -134,6 +256,16 @@
+ 
+ auto DrmFbCachedImporter::GetOrCreateFbId(BufferInfo *bo)
+     -> std::shared_ptr<DrmFbIdHandle> {
++  return GetOrCreate(bo, false);
++}
++
++auto DrmFbCachedImporter::GetOrCreateClientTargetFbId(BufferInfo *bo)
++    -> std::shared_ptr<DrmFbIdHandle> {
++  return GetOrCreate(bo, true);
++}
++
++auto DrmFbCachedImporter::GetOrCreate(BufferInfo *bo, bool client_target)
++    -> std::shared_ptr<DrmFbIdHandle> {
+   /* TODO: Clean up DrmDevices and DrmFbImporter inter-dependency.
+    *
+    * DrmFbImporter can outlive DrmDevice which will cause issues when resources
+@@ -146,6 +278,18 @@
+     drm_fd_ = drm_->GetFd();
+   }
+ 
++  uint32_t host_order_format = 0;
++  if (drm_->NeedsHostOrderScanout() && bo->format != DRM_FORMAT_XRGB8888 &&
++      bo->format != DRM_FORMAT_ARGB8888) {
++    if (client_target && bo->format == DRM_FORMAT_ABGR8888) {
++      host_order_format = DRM_FORMAT_ARGB8888;
++    } else if (client_target && bo->format == DRM_FORMAT_XBGR8888) {
++      host_order_format = DRM_FORMAT_XRGB8888;
++    } else {
++      return {};
++    }
++  }
++
+   /* Lookup DrmFbIdHandle in cache first. First handle serves as a cache key. */
+   GemHandle first_handle = 0;
+   auto err = drmPrimeFDToHandle(*drm_fd_, bo->prime_fds[0], &first_handle);
+@@ -159,6 +303,9 @@
+ 
+   if (drm_fb_id_cached != drm_fb_id_handle_cache_.end()) {
+     if (auto drm_fb_id_handle_shared = drm_fb_id_cached->second.lock()) {
++      if (drm_fb_id_handle_shared->GetScanoutFormat() != 0) {
++        bo->format = drm_fb_id_handle_shared->GetScanoutFormat();
++      }
+       return drm_fb_id_handle_shared;
+     }
+     drm_fb_id_handle_cache_.erase(drm_fb_id_cached);
+@@ -171,7 +318,11 @@
+   }
+ 
+   /* No DrmFbIdHandle found in cache, create framebuffer object */
+-  auto fb_id_handle = DrmFbIdHandle::CreateInstance(bo, first_handle, *drm_);
++  auto fb_id_handle = host_order_format != 0
++                          ? DrmFbIdHandle::CreateHostOrderInstance(
++                                bo, first_handle, host_order_format, *drm_)
++                          : DrmFbIdHandle::CreateInstance(bo, first_handle,
++                                                          *drm_);
+   if (fb_id_handle) {
+     drm_fb_id_handle_cache_[first_handle] = fb_id_handle;
+   }
+--- a/external/drm_hwcomposer-upstream/drm/DrmAtomicCommitSink.cpp
++++ b/external/drm_hwcomposer-upstream/drm/DrmAtomicCommitSink.cpp
+@@ -40,6 +40,7 @@
+ #include "drm/DrmAtomicStateManager.h"
+ #include "drm/DrmDevice.h"
+ #include "drm/DrmDisplayPipeline.h"
++#include "drm/DrmFbImporter.h"
+ #include "drm/DrmUnique.h"
+ #include "utils/log.h"
+ 
+@@ -104,6 +105,16 @@
+     for (const auto &[atomic_state_manager, _] : args) {
+       atomic_state_manager->WaitLastFrame();
+     }
++    for (const auto &[_, arg] : args) {
++      if (!arg.composition) {
++        continue;
++      }
++      for (const auto &joining : arg.composition->plan) {
++        if (joining.layer.fb) {
++          joining.layer.fb->PrepareForScanout(joining.layer.acquire_fence);
++        }
++      }
++    }
+   }
+ 
+   const int error_buf_max_size = 64;
+--- a/external/drm_hwcomposer-upstream/hwc3/ComposerClientUtils.h
++++ b/external/drm_hwcomposer-upstream/hwc3/ComposerClientUtils.h
+@@ -44,7 +44,7 @@
+ };
+ 
+ auto ImportFb(const ::android::drm_hwcomposer::HwcDisplay* display,
+-              ::android::drm_hwcomposer::BufferInfo& bi)
++              ::android::drm_hwcomposer::BufferInfo& bi, bool client_target)
+     -> std::shared_ptr<::android::drm_hwcomposer::DrmFbIdHandle>;
+ 
+ auto GetBufferCache(::android::drm_hwcomposer::HwcDisplay* parent,
+--- a/external/drm_hwcomposer-upstream/hwc3/ComposerClientUtils.cpp
++++ b/external/drm_hwcomposer-upstream/hwc3/ComposerClientUtils.cpp
+@@ -648,11 +648,14 @@
+   }
+ }
+ 
+-auto ImportFb(const HwcDisplay* display, BufferInfo& bi)
++auto ImportFb(const HwcDisplay* display, BufferInfo& bi, bool client_target)
+     -> std::shared_ptr<DrmFbIdHandle> {
+   if (display->IsInHeadlessMode()) {
+     return nullptr;
+   }
++  if (client_target) {
++    return display->GetPipe().importer->GetOrCreateClientTargetFbId(&bi);
++  }
+   return display->GetPipe().importer->GetOrCreateFbId(&bi);
+ }
+ 
+@@ -660,9 +663,10 @@
+     -> std::shared_ptr<GrallocBufferCache> {
+   auto frontend_private_data = layer.GetFrontendPrivateData();
+   if (!frontend_private_data) {
++    const bool client_target = &layer == &parent->GetClientLayer();
+     frontend_private_data = std::make_shared<GrallocBufferCache>(
+-        [parent](auto& bi) -> std::shared_ptr<DrmFbIdHandle> {
+-          return ImportFb(parent, bi);
++        [parent, client_target](auto& bi) -> std::shared_ptr<DrmFbIdHandle> {
++          return ImportFb(parent, bi, client_target);
+         });
+     layer.SetFrontendPrivateData(frontend_private_data);
+   }
+--- a/external/drm_hwcomposer-upstream/hwc3/ComposerClient.cpp
++++ b/external/drm_hwcomposer-upstream/hwc3/ComposerClient.cpp
+@@ -984,7 +984,8 @@
+   }
+   properties.buffer = {
+       .bi = bi.value(),
+-      .fb = std::static_pointer_cast<IDrmFbIdHandle>(ImportFb(display, *bi)),
++      .fb = std::static_pointer_cast<IDrmFbIdHandle>(
++          ImportFb(display, *bi, false)),
+       .fence = ::android::drm_hwcomposer::MakeSharedFd(release_fence.release()),
+   };
+   writeback_layer->SetLayerProperties(properties);
