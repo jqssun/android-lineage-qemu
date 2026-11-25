@@ -1,0 +1,85 @@
+--- a/hardware/interfaces/bluetooth/aidl/default/BluetoothHci.h
++++ b/hardware/interfaces/bluetooth/aidl/default/BluetoothHci.h
+@@ -19,6 +19,8 @@
+ #include <hal/ffi.h>
+ 
+ #include <future>
++#include <map>
++#include <mutex>
+ #include <string>
+ 
+ #include "async_fd_watcher.h"
+@@ -76,6 +78,10 @@
+         ONE_CLIENT,
+         CLOSING,
+     } mState{HalState::READY};
++
++    bool isUnexpectedVendorResponse(const std::vector<uint8_t>& event);
++    std::mutex mVendorCmdMutex;
++    std::map<uint16_t, int> mPendingVendorCmds;
+ };
+ 
+ }  // namespace aidl::android::hardware::bluetooth::impl
+--- a/hardware/interfaces/bluetooth/aidl/default/BluetoothHci.cpp
++++ b/hardware/interfaces/bluetooth/aidl/default/BluetoothHci.cpp
+@@ -192,7 +192,9 @@
+             },
+             [this](const std::vector<uint8_t>& raw_acl) { mCb->aclDataReceived(raw_acl); },
+             [this](const std::vector<uint8_t>& raw_sco) { mCb->scoDataReceived(raw_sco); },
+-            [this](const std::vector<uint8_t>& raw_event) { mCb->hciEventReceived(raw_event); },
++            [this](const std::vector<uint8_t>& raw_event) {
++                if (!isUnexpectedVendorResponse(raw_event)) mCb->hciEventReceived(raw_event);
++            },
+             [this](const std::vector<uint8_t>& raw_iso) { mCb->isoDataReceived(raw_iso); },
+             [this]() {
+                 ALOGI("HCI socket device disconnected");
+@@ -232,6 +234,11 @@
+         mState = HalState::READY;
+         mH4 = nullptr;
+     }
++
++    {
++        std::lock_guard<std::mutex> guard(mVendorCmdMutex);
++        mPendingVendorCmds.clear();
++    }
+ }
+ 
+ void BluetoothHci::clientDied() {
+@@ -240,9 +247,37 @@
+ }
+ 
+ void BluetoothHci::sendHciCommand(const std::vector<uint8_t>& packet) {
++    if (packet.size() >= 2) {
++        uint16_t opcode = packet[0] | (packet[1] << 8);
++        if ((opcode >> 10) == 0x3f) {
++            std::lock_guard<std::mutex> guard(mVendorCmdMutex);
++            mPendingVendorCmds[opcode]++;
++        }
++    }
+     return send(PacketType::COMMAND, packet);
+ }
+ 
++bool BluetoothHci::isUnexpectedVendorResponse(const std::vector<uint8_t>& event) {
++    uint16_t opcode;
++    if (event.size() >= 5 && event[0] == 0x0e) {
++        opcode = event[3] | (event[4] << 8);
++    } else if (event.size() >= 6 && event[0] == 0x0f) {
++        opcode = event[4] | (event[5] << 8);
++    } else {
++        return false;
++    }
++    if ((opcode >> 10) != 0x3f) return false;
++
++    std::lock_guard<std::mutex> guard(mVendorCmdMutex);
++    auto it = mPendingVendorCmds.find(opcode);
++    if (it == mPendingVendorCmds.end()) {
++        ALOGW("Dropping unexpected event 0x%02x for opcode 0x%04x", event[0], opcode);
++        return true;
++    }
++    if (--it->second == 0) mPendingVendorCmds.erase(it);
++    return false;
++}
++
+ void BluetoothHci::sendAclData(const std::vector<uint8_t>& packet) {
+     return send(PacketType::ACL_DATA, packet);
+ }
