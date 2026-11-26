@@ -32,6 +32,7 @@ sed -i 's/^# Camera$/&\nTARGET_SUPPORTS_EXTERNAL_CAMERAS := true/' device/virt/v
 sed -i 's/context=u:object_r:firmware_file:s0/context=u:object_r:firmware_mnt_file:s0/' device/virt/virt-common/configs/init/init.virt.rc
 sed -i 's#^firmware_directories /vendor/firmware_mnt$#&/#' device/virt/virt-common/configs/init/ueventd.virt.rc
 sed -i '$a allow kernel firmware_mnt_file:system firmware_load;' device/virt/virt-common/sepolicy/vendor/kernel.te
+sed -i '/^ro\.boot\.wifi_mac_prefix=/d' device/virt/virt-common/configs/properties/vendor.prop
 for p in ../../patches/*.patch; do patch -p1 < "$p"; done
 
 breakfast virtio_x86_64 userdebug

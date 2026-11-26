@@ -21,6 +21,8 @@ For the latest builds, see [Releases](https://github.com/jqssun/android-lineage-
 adb sideload [*.zip]
 ```
 
+- To scroll with a mouse or trackpad when using UTM, make sure **Capture input devices** is selected. This sends input to the `usb-mouse` device instead of `usb-tablet`.
+
 ### Generic System Images (GSI)
 
 [These `arm64` and `x86_64` virtual machine images are typically compatible with GSIs of an equivalent or later Android version.](https://wiki.lineageos.org/libvirt-qemu#run-generic-system-images-inside-the-virtual-machine) First, download and unzip the image archive from [Generic System Image releases](https://developer.android.com/topic/generic-system-image/releases) to obtain `system.img`. You generally want `{gsi_gms,aosp}_{arm64,x86_64}*.zip` archives, but other GSI compatible Android/ALOS images may also be supported. Once you have the image, you can either [try running it directly](#using-gsi-directly) or [flash it to the virtual machine's partition permanently](#installing-gsi-to-virtual-machine-permanently).

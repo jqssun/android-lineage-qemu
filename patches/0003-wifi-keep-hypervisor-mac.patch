@@ -1,0 +1,16 @@
+--- a/device/google/cuttlefish/guest/commands/setup_wifi/main.cpp
++++ b/device/google/cuttlefish/guest/commands/setup_wifi/main.cpp
+@@ -66,7 +66,8 @@
+   });
+-  fix_mac_request.AddMacAddress(prefix_to_mac(FLAGS_mac_prefix));
+-  bool fix_mac = nl->Send(fix_mac_request);
+-  if (!fix_mac) {
+-    LOG(ERROR) << "setup_network: could not fix mac address";
+-    return -5;
++  if (!FLAGS_mac_prefix.empty()) {
++    fix_mac_request.AddMacAddress(prefix_to_mac(FLAGS_mac_prefix));
++    if (!nl->Send(fix_mac_request)) {
++      LOG(ERROR) << "setup_network: could not fix mac address";
++      return -5;
++    }
+   }
